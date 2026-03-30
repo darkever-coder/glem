@@ -2,26 +2,41 @@
 set -euo pipefail
 
 #######################################################
-# Termux Desktop / Dev One-Go Installer
+# TERMUX DESKTOP + DEV + PROOT UBUNTU ONE-RUN INSTALL
 #
-# Installs:
-# - XFCE desktop + Termux-X11
-# - GPU acceleration (Turnip/Zink when possible)
-# - Firefox, Code-OSS, Python, Git, Node.js
-# - proot + proot-distro
-# - fake sudo wrapper
-# - .NET 8 native Termux package
+# Native Termux:
+# - XFCE4 desktop
+# - Termux-X11
+# - GPU acceleration (best effort)
+# - Firefox
+# - Code-OSS
+# - Python
+# - Git
+# - Node.js
+# - .NET 8 (native Termux package if available)
+# - proot / proot-distro
+# - fake sudo
 #
-# Start desktop with:
-#   ./start.sh
-# Stop desktop with:
-#   ./stop.sh
+# Proot Ubuntu:
+# - Ubuntu distro install
+# - git
+# - curl / wget
+# - python3 / pip
+# - node / npm
+# - .NET 8 via official dotnet-install.sh
+#
+# Launch desktop:
+#   cd ~ && ./start.sh
+#
+# Stop desktop:
+#   cd ~ && ./stop.sh
 #######################################################
 
-TOTAL_STEPS=15
+TOTAL_STEPS=17
 CURRENT_STEP=0
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
+UBUNTU_NAME="ubuntu"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -67,9 +82,9 @@ spinner() {
     local exit_code=$?
 
     if [ "$exit_code" -eq 0 ]; then
-        printf "\r  ${GREEN}✓${NC} %s                                      \n" "$message"
+        printf "\r  ${GREEN}✓${NC} %s                                            \n" "$message"
     else
-        printf "\r  ${RED}✗${NC} %s ${RED}(failed)${NC}                        \n" "$message"
+        printf "\r  ${RED}✗${NC} %s ${RED}(failed)${NC}                                  \n" "$message"
     fi
 
     return "$exit_code"
@@ -97,8 +112,10 @@ install_if_available() {
     local name="${2:-$pkg}"
     if pkg_exists "$pkg"; then
         install_pkg "$pkg" "$name"
+        return 0
     else
         echo -e "  ${YELLOW}•${NC} ${name} not available, skipping."
+        return 1
     fi
 }
 
@@ -114,8 +131,8 @@ show_banner() {
     echo -e "${CYAN}"
     cat << 'EOF'
 ╔══════════════════════════════════════════════╗
-║        TERMUX DESKTOP / DEV INSTALLER        ║
-║              One-Go Setup Script             ║
+║      TERMUX DESKTOP + DEV ALL-IN-ONE        ║
+║          Native + Ubuntu Proot Setup        ║
 ╚══════════════════════════════════════════════╝
 EOF
     echo -e "${NC}"
@@ -178,9 +195,10 @@ step_base() {
     install_pkg "nano" "Nano"
     install_pkg "vim" "Vim"
     install_pkg "openssh" "OpenSSH"
+    install_pkg "which" "which"
 }
 
-step_proot() {
+step_proot_native() {
     update_progress
     echo -e "${PURPLE}Installing proot environment...${NC}"
     install_pkg "proot" "proot"
@@ -188,9 +206,9 @@ step_proot() {
     install_if_available "tsu" "tsu"
 }
 
-step_node_git_dotnet() {
+step_node_git_dotnet_native() {
     update_progress
-    echo -e "${PURPLE}Installing Node.js / Git / .NET 8...${NC}"
+    echo -e "${PURPLE}Installing native Node.js / Git / .NET 8...${NC}"
 
     if pkg_exists "nodejs-lts"; then
         install_pkg "nodejs-lts" "Node.js LTS"
@@ -200,11 +218,10 @@ step_node_git_dotnet() {
 
     install_pkg "git" "Git"
 
-    # Current native Termux .NET 8 package
     if pkg_exists "dotnet-sdk-8.0"; then
         install_pkg "dotnet-sdk-8.0" ".NET SDK 8"
     else
-        echo -e "  ${YELLOW}•${NC} dotnet-sdk-8.0 not found in this repo/device. Skipping."
+        echo -e "  ${YELLOW}•${NC} dotnet-sdk-8.0 not found natively. Skipping native .NET."
     fi
 }
 
@@ -349,21 +366,28 @@ EOF
 
     cat > "${HOME_DIR}/devcheck.sh" << 'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
-echo "=== Tool check ==="
+echo "=== Native Termux tool check ==="
 command -v git >/dev/null 2>&1 && git --version
 command -v node >/dev/null 2>&1 && node --version
 command -v npm >/dev/null 2>&1 && npm --version
 command -v python >/dev/null 2>&1 && python --version
-command -v dotnet >/dev/null 2>&1 && dotnet --info | head -n 20
+command -v dotnet >/dev/null 2>&1 && dotnet --info | head -n 20 || true
 command -v proot >/dev/null 2>&1 && echo "proot: OK"
 command -v proot-distro >/dev/null 2>&1 && echo "proot-distro: OK"
 command -v sudo >/dev/null 2>&1 && echo "sudo: fake wrapper installed"
 EOF
     chmod +x "${HOME_DIR}/devcheck.sh"
 
+    cat > "${HOME_DIR}/ubuntu.sh" << 'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+exec proot-distro login ubuntu
+EOF
+    chmod +x "${HOME_DIR}/ubuntu.sh"
+
     echo -e "  ${GREEN}✓${NC} Created ~/start.sh"
     echo -e "  ${GREEN}✓${NC} Created ~/stop.sh"
     echo -e "  ${GREEN}✓${NC} Created ~/devcheck.sh"
+    echo -e "  ${GREEN}✓${NC} Created ~/ubuntu.sh"
 }
 
 step_shortcuts() {
@@ -402,30 +426,87 @@ EOF
     chmod +x "${HOME_DIR}"/Desktop/*.desktop 2>/dev/null || true
 }
 
+step_install_ubuntu_proot() {
+    update_progress
+    echo -e "${PURPLE}Installing Ubuntu proot distro...${NC}"
+
+    if proot-distro list | grep -q "^${UBUNTU_NAME}\b"; then
+        :
+    fi
+
+    if [ -d "${PREFIX}/var/lib/proot-distro/installed-rootfs/${UBUNTU_NAME}" ]; then
+        echo -e "  ${YELLOW}•${NC} Ubuntu proot already installed, skipping rootfs install."
+    else
+        run_bg "Installing Ubuntu rootfs..." proot-distro install "${UBUNTU_NAME}"
+    fi
+}
+
+step_configure_ubuntu_proot() {
+    update_progress
+    echo -e "${PURPLE}Configuring Ubuntu proot tools...${NC}"
+
+    cat > "${HOME_DIR}/.ubuntu-provision.sh" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y software-properties-common ca-certificates apt-transport-https gnupg curl wget git python3 python3-pip build-essential
+
+# Node.js via distro repo first
+if ! command -v node >/dev/null 2>&1; then
+    apt-get install -y nodejs npm || true
+fi
+
+# Official .NET 8 install for current user inside proot
+export DOTNET_ROOT="$HOME/.dotnet"
+mkdir -p "$DOTNET_ROOT"
+
+curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+chmod +x /tmp/dotnet-install.sh
+/tmp/dotnet-install.sh --channel 8.0 --install-dir "$DOTNET_ROOT"
+
+grep -q 'export DOTNET_ROOT="$HOME/.dotnet"' "$HOME/.bashrc" 2>/dev/null || echo 'export DOTNET_ROOT="$HOME/.dotnet"' >> "$HOME/.bashrc"
+grep -q 'export PATH="$HOME/.dotnet:$HOME/.dotnet/tools:$PATH"' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.dotnet:$HOME/.dotnet/tools:$PATH"' >> "$HOME/.bashrc"
+
+# Ensure pip basic tools
+python3 -m pip install --upgrade pip setuptools wheel || true
+EOF
+    chmod +x "${HOME_DIR}/.ubuntu-provision.sh"
+
+    proot-distro login "${UBUNTU_NAME}" --shared-tmp -- /bin/bash -lc "/data/data/com.termux/files/home/.ubuntu-provision.sh"
+}
+
 step_finish() {
     update_progress
     echo -e "${PURPLE}Finalizing...${NC}"
     echo ""
     echo -e "${GREEN}Installation complete.${NC}"
     echo ""
-    echo -e "${WHITE}Start desktop:${NC} ${GREEN}cd ~ && ./start.sh${NC}"
-    echo -e "${WHITE}Stop desktop:${NC}  ${GREEN}cd ~ && ./stop.sh${NC}"
-    echo -e "${WHITE}Check tools:${NC}   ${GREEN}cd ~ && ./devcheck.sh${NC}"
+    echo -e "${WHITE}Desktop start:${NC} ${GREEN}cd ~ && ./start.sh${NC}"
+    echo -e "${WHITE}Desktop stop:${NC}  ${GREEN}cd ~ && ./stop.sh${NC}"
+    echo -e "${WHITE}Native tools check:${NC} ${GREEN}cd ~ && ./devcheck.sh${NC}"
+    echo -e "${WHITE}Open Ubuntu proot:${NC} ${GREEN}cd ~ && ./ubuntu.sh${NC}"
     echo ""
-    echo -e "${WHITE}For native Termux packages later:${NC}"
+    echo -e "${WHITE}Native Termux later:${NC}"
     echo -e "  ${GREEN}pkg install <package>${NC}"
     echo -e "  ${GREEN}sudo pkg install <package>${NC} ${GRAY}(fake sudo only)${NC}"
     echo ""
-    echo -e "${WHITE}For proot Linux later:${NC}"
-    echo -e "  ${GREEN}proot-distro install ubuntu${NC}"
-    echo -e "  ${GREEN}proot-distro login ubuntu${NC}"
+    echo -e "${WHITE}Inside Ubuntu proot:${NC}"
+    echo -e "  ${GREEN}git --version${NC}"
+    echo -e "  ${GREEN}node -v${NC}"
+    echo -e "  ${GREEN}npm -v${NC}"
+    echo -e "  ${GREEN}python3 --version${NC}"
+    echo -e "  ${GREEN}~/.dotnet/dotnet --info${NC}"
     echo ""
     echo -e "${YELLOW}Open the Termux-X11 app, then run ./start.sh${NC}"
 }
 
 main() {
     show_banner
-    echo -e "${WHITE}This installs a one-go Termux desktop/dev setup.${NC}"
+    echo -e "${WHITE}This will install the full Termux desktop/dev environment and Ubuntu proot in one run.${NC}"
+    echo -e "${WHITE}It may take a while depending on network speed and storage.${NC}"
     echo -e "${WHITE}Press Enter to continue, or Ctrl+C to cancel.${NC}"
     read -r
 
@@ -433,8 +514,8 @@ main() {
     step_update
     step_repos
     step_base
-    step_proot
-    step_node_git_dotnet
+    step_proot_native
+    step_node_git_dotnet_native
     step_x11
     step_desktop
     step_gpu
@@ -445,6 +526,8 @@ main() {
     step_shell_setup
     step_launchers
     step_shortcuts
+    step_install_ubuntu_proot
+    step_configure_ubuntu_proot
     step_finish
 }
 
