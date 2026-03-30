@@ -1,4 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
+
+# ensure bash is used even if piped
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 #######################################################
